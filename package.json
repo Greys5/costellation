@@ -12,20 +12,65 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "lucide-react": "^0.468.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "recharts": "^3.0.0"
+    "lucide-react": "1.58.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "recharts": "3.10.1",
+    "react-router-dom": "6.30.6",
+    "@backstage/config": "1.3.9",
+    "@backstage/frontend-plugin-api": "0.18.1",
+    "@backstage/frontend-defaults": "0.5.6"
   },
   "devDependencies": {
-    "@testing-library/react": "^16.3.3",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "@vitejs/plugin-react": "^4.4.0",
-    "jsdom": "^29.1.1",
-    "prettier": "^3.9.10",
-    "typescript": "~5.7.2",
-    "vite": "^6.1.0",
-    "vitest": "^4.1.12"
+    "@testing-library/react": "16.3.3",
+    "@types/react": "18.3.31",
+    "@types/react-dom": "18.3.7",
+    "@vitejs/plugin-react": "6.1.2",
+    "jsdom": "30.1.3",
+    "prettier": "3.9.10",
+    "typescript": "7.0.2",
+    "vite": "8.3.4",
+    "vitest": "5.0.5"
+  },
+  "engines": {
+    "node": ">=24.22.0 <25"
+  },
+  "overrides": {
+    "@material-ui/core": {
+      "react": "$react",
+      "react-dom": "$react-dom",
+      "@types/react": "$@types/react"
+    },
+    "@material-ui/icons": {
+      "react": "$react",
+      "react-dom": "$react-dom",
+      "@types/react": "$@types/react"
+    },
+    "@material-ui/lab": {
+      "react": "$react",
+      "react-dom": "$react-dom",
+      "@types/react": "$@types/react"
+    },
+    "@material-ui/styles": {
+      "react": "$react",
+      "react-dom": "$react-dom",
+      "@types/react": "$@types/react"
+    },
+    "@material-ui/system": {
+      "react": "$react",
+      "react-dom": "$react-dom",
+      "@types/react": "$@types/react"
+    },
+    "@material-ui/utils": {
+      "react": "$react",
+      "react-dom": "$react-dom",
+      "@types/react": "$@types/react"
+    },
+    "prismjs": "1.30.0",
+    "@material-ui/pickers": {
+      "react": "$react",
+      "react-dom": "$react-dom",
+      "@types/react": "$@types/react"
+    }
   }
 }

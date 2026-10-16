@@ -7,16 +7,18 @@ Connect the dots in your cloud spend. A local, read-only AWS billing dashboard f
 
 ## Run
 
-Requires Python 3.11+ with venv, Node.js 22+, npm, AWS CLI, and an existing AWS SSO profile with management-account billing access.
+Requires Python 3.11+ with venv, Node.js 24.22+ LTS (24.x), npm, AWS CLI, and an existing AWS SSO profile with management-account billing access.
 
 ```bash
 cd costellation
+nvm install
+nvm use
 export AWS_PROFILE=your-management-profile
 aws sso login --profile "$AWS_PROFILE"
 ./run.sh
 ```
 
-Open **http://127.0.0.1:8000**. The script installs dependencies on first run and builds the frontend. Stop with Ctrl+C. Set `PORT` to use another local port. No AWS resources are deployed.
+Open **http://127.0.0.1:8000**. The script synchronizes dependencies from the lockfiles and builds the frontend on every run, including upgrades from an earlier checkout. Stop with Ctrl+C. Set `PORT` to use another local port. No AWS resources are deployed.
 
 For development, run the API and frontend in separate terminals:
 
@@ -26,6 +28,18 @@ npm run dev
 ```
 
 Vite proxies `/api` to the local backend. The production build is served by FastAPI on one origin. API reference: `/api/docs`.
+
+## Backstage foundation and dependencies
+
+The frontend boots through Backstage's `createApp` from `@backstage/frontend-defaults`. Costellation is registered as a frontend plugin using `createFrontendPlugin` and `PageBlueprint`. A layout extension preserves its navigation and visual identity. The local read-only billing service remains FastAPI/Boto3; this pilot does not install a Backstage catalog, scaffolder, or Node backend. Local AWS SSO remains the access boundary, with no additional portal login.
+
+Direct dependencies were checked against the official [npm registry](https://registry.npmjs.org/) and [PyPI](https://pypi.org/) on October 16, 2026, and pinned. `package-lock.json` and the hash-verified `requirements.lock` capture resolved dependencies. Recheck with `python3 scripts/check-dependency-versions.py`.
+
+React 18, its matching type packages, and React Router 6 use the newest releases accepted by the stable Backstage packages' peer requirements. Forcing newer unsupported majors would break that compatibility contract. Targeted Material UI 4 peer overrides reflect Backstage's React 18 baseline; they do not upgrade its legacy UI dependencies to incompatible majors. PrismJS is overridden to its patched 1.30.0 release.
+
+Backstage's dependency tree still includes upstream moderate security advisories affecting legacy Octokit and Router packages. No GitHub integration or server-side rendering is configured here. These limitations must be reassessed before shared deployment; `npm audit` reports them rather than suppressing them. Do not use `npm audit fix --force` to downgrade Backstage or force unsupported framework majors.
+
+Framework references: [Backstage app instances](https://backstage.io/docs/frontend-system/architecture/app/), [frontend plugins](https://backstage.io/docs/frontend-system/building-plugins/index/), and [release compatibility](https://backstage.io/docs/overview/versioning-policy/).
 
 ## Using the dashboard
 
