@@ -1,0 +1,76 @@
+{
+  "name": "costellation",
+  "private": true,
+  "license": "UNLICENSED",
+  "author": "Greysa Santander Ferreira",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "lucide-react": "1.58.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "recharts": "3.10.1",
+    "react-router-dom": "6.30.6",
+    "@backstage/config": "1.3.9",
+    "@backstage/frontend-plugin-api": "0.18.1",
+    "@backstage/frontend-defaults": "0.5.6"
+  },
+  "devDependencies": {
+    "@testing-library/react": "16.3.3",
+    "@types/react": "18.3.31",
+    "@types/react-dom": "18.3.7",
+    "@vitejs/plugin-react": "6.1.2",
+    "jsdom": "30.1.3",
+    "prettier": "3.9.10",
+    "typescript": "7.0.2",
+    "vite": "8.3.4",
+    "vitest": "5.0.5"
+  },
+  "engines": {
+    "node": ">=24.22.0 <25"
+  },
+  "overrides": {
+    "@material-ui/core": {
+      "react": "$react",
+      "react-dom": "$react-dom",
+      "@types/react": "$@types/react"
+    },
+    "@material-ui/icons": {
+      "react": "$react",
+      "react-dom": "$react-dom",
+      "@types/react": "$@types/react"
+    },
+    "@material-ui/lab": {
+      "react": "$react",
+      "react-dom": "$react-dom",
+      "@types/react": "$@types/react"
+    },
+    "@material-ui/styles": {
+      "react": "$react",
+      "react-dom": "$react-dom",
+      "@types/react": "$@types/react"
+    },
+    "@material-ui/system": {
+      "react": "$react",
+      "react-dom": "$react-dom",
+      "@types/react": "$@types/react"
+    },
+    "@material-ui/utils": {
+      "react": "$react",
+      "react-dom": "$react-dom",
+      "@types/react": "$@types/react"
+    },
+    "prismjs": "1.30.0",
+    "@material-ui/pickers": {
+      "react": "$react",
+      "react-dom": "$react-dom",
+      "@types/react": "$@types/react"
+    }
+  }
+}
