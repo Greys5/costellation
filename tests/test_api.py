@@ -18,6 +18,9 @@ module = importlib.import_module("backend.app")
 class FakeAWS:
     profile = "test"
 
+    def resource_costs(self, start, end, metric="UnblendedCost", accounts=None):
+        return []
+
     def accounts(self):
         return [{"Id": "000000000001", "Name": "Alpha", "State": "ACTIVE"}, {"Id": "000000000002", "Name": "Zero", "State": "ACTIVE"}]
 
@@ -42,6 +45,30 @@ def test_api_reconciles_and_caches_costs(client):
     assert first["data"]["estimated"] is True
     assert first["meta"]["cached"] is False
     assert client.get("/api/costs?start=2026-09-01&end=2026-10-01").json()["meta"]["cached"] is True
+
+
+def test_new_resources_excludes_baseline_and_maps_accounts(client, monkeypatch):
+    calls = []
+    def resource_costs(start, end, metric, accounts):
+        calls.append((start, end, metric, accounts))
+        def day(value, groups):
+            return {"start": value, "end": value, "estimated": False, "groups": [
+                {"keys": [resource, account], "amount": amount} for resource, account, amount in groups
+            ]}
+        return [
+            day("2026-10-02", [("i-old", "000000000001", "2")]),
+            day("2026-10-08", [("i-new", "000000000001", "5"), ("No resource ID", "000000000001", "9")]),
+            day("2026-10-09", [("i-new", "000000000001", "-1")]),
+        ]
+    monkeypatch.setattr(module.aws, "resource_costs", resource_costs)
+    response = client.get("/api/new-resources?period=WEEKLY&accounts=000000000001")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert calls == [(date(2026, 10, 2), date(2026, 10, 16), "UnblendedCost", ["000000000001"])]
+    assert data["resources"] == [{"id": "i-new", "account": "000000000001", "first_seen": "2026-10-08", "period": "2026-10-05", "spend": "4"}]
+    assert data["observed_count"] == 2
+    assert sum(row["count"] for row in data["periods"]) == 1
+    assert client.get("/api/new-resources?period=YEARLY").status_code == 422
 
 
 def test_api_rejects_nonreconciling_groups(client, monkeypatch):

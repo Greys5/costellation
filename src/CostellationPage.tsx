@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
-  Area,
-  AreaChart,
+  Bar,
+  ComposedChart,
+  Line,
   CartesianGrid,
   ResponsiveContainer,
   Tooltip,
@@ -30,6 +31,8 @@ import {
 } from "lucide-react";
 import { useData } from "./useData";
 import { selectActiveTag } from "./tagSelection";
+import { availableDays, monthChoices, spendingWindow, type SpendingPeriod } from "./spendingPeriod";
+import { weeksInMonth } from "./weeklySpending";
 
 type Account = { Id: string; Name: string; State: string };
 type AllocationTag = { TagKey: string; Status: string; Type: string };
@@ -74,6 +77,22 @@ type Costs = {
   start: string;
   end: string;
   group: string;
+};
+type NewResources = {
+  start: string;
+  end: string;
+  period: string;
+  service: string;
+  observed_count: number;
+  estimated: boolean;
+  periods: { period: string; count: number; spend: string }[];
+  resources: {
+    id: string;
+    account: string;
+    first_seen: string;
+    period: string;
+    spend: string;
+  }[];
 };
 type Coverage = {
   total: string;
@@ -193,16 +212,10 @@ function Trend({ data, daily = false }: { data: Costs; daily?: boolean }) {
   return (
     <div className="chart">
       <ResponsiveContainer width="100%" height={270}>
-        <AreaChart
+        <ComposedChart
           data={rows}
           margin={{ top: 15, right: 18, left: 4, bottom: 0 }}
         >
-          <defs>
-            <linearGradient id="costFill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#8370d8" stopOpacity={0.24} />
-              <stop offset="100%" stopColor="#8370d8" stopOpacity={0} />
-            </linearGradient>
-          </defs>
           <CartesianGrid
             strokeDasharray="3 5"
             vertical={false}
@@ -240,17 +253,53 @@ function Trend({ data, daily = false }: { data: Costs; daily?: boolean }) {
               fontSize: 12,
             }}
           />
-          <Area
-            isAnimationActive={false}
-            type="monotone"
-            dataKey="cost"
-            stroke="#8270d0"
-            strokeWidth={2.5}
-            fill="url(#costFill)"
-            dot={false}
-            activeDot={{ r: 5, stroke: "#fff", strokeWidth: 2 }}
+          <Bar dataKey="cost" fill="#8370d8" isAnimationActive={false} radius={[5, 5, 0, 0]} />
+          <Line dataKey="cost" type="linear" stroke="#c65f4a" strokeWidth={2.5} dot={{ r: 3 }} isAnimationActive={false} />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+function SpendingBars({ data, mode, month }: { data: Costs; mode: SpendingPeriod; month: string }) {
+  const rows = mode === "week"
+    ? weeksInMonth(month, data.end, data.periods)
+    : data.periods.map((period) => ({
+        label: new Date(period.end).getTime() - new Date(period.start).getTime() > 86400000
+          ? period.start.slice(0, 7)
+          : period.start.slice(5),
+        cost: Number(period.total),
+      }));
+  return (
+    <div className="chart">
+      <ResponsiveContainer width="100%" height={270}>
+        <ComposedChart
+          data={rows}
+          margin={{ top: 15, right: 18, left: 4, bottom: 0 }}
+        >
+          <CartesianGrid
+            strokeDasharray="3 5"
+            vertical={false}
+            stroke="#e9e7f1"
           />
-        </AreaChart>
+          <XAxis dataKey="label" tick={{ fill: "#8f8ca1", fontSize: 11 }} />
+          <YAxis
+            tickFormatter={(v) => money(v, true)}
+            tick={{ fill: "#8f8ca1", fontSize: 11 }}
+            width={65}
+          />
+          <Tooltip
+            formatter={(v) => [money(Number(v)), "Spend"]}
+            labelFormatter={(value) => mode === "week" ? `${month} days ${value}` : String(value)}
+          />
+          <Bar
+            dataKey="cost"
+            name="Spend"
+            fill="#8370d8"
+            isAnimationActive={false}
+            radius={[5, 5, 0, 0]}
+          />
+          <Line dataKey="cost" name="Trend" type="linear" stroke="#c65f4a" strokeWidth={2.5} dot={{ r: 3 }} isAnimationActive={false} />
+        </ComposedChart>
       </ResponsiveContainer>
     </div>
   );
@@ -341,13 +390,23 @@ export function CostellationPage() {
   const [start, setStart] = useState(""),
     [end, setEnd] = useState(""),
     [coverageKey, setCoverageKey] = useState("");
+  const [spendingView, setSpendingView] = useState("all");
+  const [resourcePeriod, setResourcePeriod] = useState("WEEKLY");
+  const [spendingPeriod, setSpendingPeriod] = useState<SpendingPeriod>("six-months");
+  const [selectedMonth, setSelectedMonth] = useState("");
+  const [limitMonthDays, setLimitMonthDays] = useState(false);
+  const [fromDay, setFromDay] = useState(1);
+  const [toDay, setToDay] = useState(0);
   useEffect(() => {
     if (opts.result) {
       setStart((v) => v || opts.result!.data.earliest);
       setEnd((v) => v || opts.result!.data.today);
+      setSelectedMonth((v) => v || monthChoices(opts.result!.data.earliest, opts.result!.data.today)[0]?.value || "");
     }
   }, [opts.result]);
   const options = opts.result?.data;
+  const months = useMemo(() => monthChoices(options?.earliest || "", options?.today || ""), [options?.earliest, options?.today]);
+  const monthDayCount = availableDays(selectedMonth, options?.today || "");
   const names = useMemo(
     () =>
       Object.fromEntries((options?.accounts || []).map((a) => [a.Id, a.Name])),
@@ -361,7 +420,9 @@ export function CostellationPage() {
     tagKey ? "/api/tag-values?key=" + encodeURIComponent(tagKey) : null,
   );
   const params = useMemo(() => {
-    const p = new URLSearchParams({ start, end, metric, group, granularity });
+    const window = spendingWindow(spendingPeriod, options?.today || end, start, end, selectedMonth, granularity,
+      limitMonthDays ? { from: fromDay, to: toDay || monthDayCount } : undefined);
+    const p = new URLSearchParams({ ...window, metric, group });
     accounts.forEach((v) => p.append("accounts", v));
     services.forEach((v) => p.append("services", v));
     regions.forEach((v) => p.append("regions", v));
@@ -383,9 +444,33 @@ export function CostellationPage() {
     tagKey,
     tagValues,
     absent,
+    spendingPeriod,
+    selectedMonth,
+    limitMonthDays,
+    fromDay,
+    toDay,
+    monthDayCount,
+    options?.today,
   ]);
   const explorer = useData<Costs>(
-    page === "Cost Explorer" && start && end ? "/api/costs?" + params : null,
+    page === "Cost Explorer" &&
+      spendingView === "all" &&
+      start &&
+      end &&
+      (spendingPeriod === "six-months" || spendingPeriod === "range" || selectedMonth)
+      ? "/api/costs?" + params
+      : null,
+    revision,
+  );
+  const resourceParams = new URLSearchParams({
+    period: resourcePeriod,
+    metric,
+  });
+  accounts.forEach((account) => resourceParams.append("accounts", account));
+  const newResources = useData<NewResources>(
+    page === "Cost Explorer" && spendingView === "new"
+      ? "/api/new-resources?" + resourceParams
+      : null,
     revision,
   );
   const trend = useData<Costs>(
@@ -467,6 +552,7 @@ export function CostellationPage() {
     opts.loading ||
     report.loading ||
     explorer.loading ||
+    newResources.loading ||
     trend.loading ||
     serviceData.loading ||
     coverage.loading;
@@ -474,6 +560,7 @@ export function CostellationPage() {
     opts.result,
     report.result,
     explorer.result,
+    newResources.result,
     trend.result,
     serviceData.result,
     coverage.result,
@@ -923,171 +1010,403 @@ export function CostellationPage() {
                     </button>
                   )}
                 </div>
-                <div className="date-presets">
+                <div className="view-switch" aria-label="Spending view">
                   <button
-                    onClick={() => {
-                      if (options) {
-                        setStart(options.earliest);
-                        setEnd(options.today);
-                        setGranularity("MONTHLY");
-                      }
-                    }}
+                    type="button"
+                    className={spendingView === "all" ? "selected" : ""}
+                    aria-pressed={spendingView === "all"}
+                    onClick={() => setSpendingView("all")}
                   >
-                    12 months + current
+                    All spending
                   </button>
                   <button
-                    onClick={() => {
-                      if (current) {
-                        setStart(current.previous_start);
-                        setEnd(current.current_start);
-                        setGranularity("MONTHLY");
-                      }
-                    }}
+                    type="button"
+                    className={spendingView === "new" ? "selected" : ""}
+                    aria-pressed={spendingView === "new"}
+                    onClick={() => setSpendingView("new")}
                   >
-                    Previous month
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (current) {
-                        setStart(current.current_start);
-                        setEnd(current.end);
-                        setGranularity("DAILY");
-                      }
-                    }}
-                  >
-                    Current month · daily
+                    First seen resources
                   </button>
                 </div>
-                <div className="filter-grid">
-                  <label>
-                    Start date
-                    <input
-                      type="date"
-                      aria-label="Start date"
-                      min={options?.earliest}
-                      max={end}
-                      value={start}
-                      onChange={(e) => setStart(e.target.value)}
-                    />
-                  </label>
-                  <label>
-                    End date (exclusive)
-                    <input
-                      type="date"
-                      aria-label="End date"
-                      min={start}
-                      max={options?.today}
-                      value={end}
-                      onChange={(e) => setEnd(e.target.value)}
-                    />
-                  </label>
-                  <label>
-                    Group by
-                    <select
-                      value={group}
-                      onChange={(e) => setGroup(e.target.value)}
+                {spendingView === "all" ? (
+                  <>
+                    <div
+                      className="view-switch compact"
+                      aria-label="Spending period"
                     >
-                      <option value="LINKED_ACCOUNT">Account</option>
-                      <option value="SERVICE">Service</option>
-                      <option value="REGION">Region</option>
-                    </select>
-                  </label>
-                  <label>
-                    Granularity
-                    <select
-                      value={granularity}
-                      onChange={(e) => setGranularity(e.target.value)}
-                    >
-                      <option value="MONTHLY">Monthly</option>
-                      <option value="DAILY">Daily</option>
-                    </select>
-                  </label>
-                </div>
-                <div className="filter-row">
-                  <MultiSelect
-                    label="Accounts"
-                    options={
-                      options?.accounts.map((a) => ({
-                        value: a.Id,
-                        label: a.Name,
-                      })) || []
-                    }
-                    selected={accounts}
-                    onChange={setAccounts}
-                  />
-                  <MultiSelect
-                    label="Services"
-                    options={
-                      options?.services.map((v) => ({ value: v, label: v })) ||
-                      []
-                    }
-                    selected={services}
-                    onChange={setServices}
-                  />
-                  <MultiSelect
-                    label="Regions"
-                    options={
-                      options?.regions.map((v) => ({
-                        value: v,
-                        label: v || "No region",
-                      })) || []
-                    }
-                    selected={regions}
-                    onChange={setRegions}
-                  />
-                  <label className="tag-select">
-                    <Tag size={14} />
-                    <select
-                      aria-label="Tag key"
-                      value={tagKey}
-                      onChange={(e) => {
-                        setTagKey(e.target.value);
-                        setTagValues([]);
-                        setAbsent(false);
-                      }}
-                    >
-                      <option value="">Cost allocation tag</option>
-                      {active.map((t) => (
-                        <option key={t.TagKey}>{t.TagKey}</option>
-                      ))}
-                    </select>
-                  </label>
-                  {tagKey && (
-                    <>
-                      <MultiSelect
-                        label="Tag values"
-                        options={(values.result?.data || []).map((v) => ({
-                          value: v,
-                          label: v || "(empty value)",
-                        }))}
-                        selected={tagValues}
-                        onChange={(v) => {
-                          setTagValues(v);
-                          setAbsent(false);
-                        }}
-                      />
-                      <label className="checkbox">
-                        <input
-                          type="checkbox"
-                          checked={absent}
-                          onChange={(e) => {
-                            setAbsent(e.target.checked);
-                            setTagValues([]);
-                          }}
-                        />
-                        Missing tag
+                      <button
+                        type="button"
+                        className={spendingPeriod === "six-months" ? "selected" : ""}
+                        aria-pressed={spendingPeriod === "six-months"}
+                        onClick={() => setSpendingPeriod("six-months")}
+                      >
+                        Last 6 months
+                      </button>
+                      <button
+                        type="button"
+                        className={spendingPeriod === "range" ? "selected" : ""}
+                        aria-pressed={spendingPeriod === "range"}
+                        onClick={() => setSpendingPeriod("range")}
+                      >
+                        Custom range
+                      </button>
+                      <button
+                        type="button"
+                        className={spendingPeriod === "month" ? "selected" : ""}
+                        aria-pressed={spendingPeriod === "month"}
+                        onClick={() => setSpendingPeriod("month")}
+                      >
+                        Month
+                      </button>
+                      <button
+                        type="button"
+                        className={spendingPeriod === "week" ? "selected" : ""}
+                        aria-pressed={spendingPeriod === "week"}
+                        onClick={() => setSpendingPeriod("week")}
+                      >
+                        Week
+                      </button>
+                    </div>
+                    {spendingPeriod === "range" ? (
+                      <>
+                        <div className="filter-grid">
+                          <label>
+                            Start date
+                            <input
+                              type="date"
+                              aria-label="Start date"
+                              min={options?.earliest}
+                              max={end}
+                              value={start}
+                              onChange={(e) => setStart(e.target.value)}
+                            />
+                          </label>
+                          <label>
+                            End date (exclusive)
+                            <input
+                              type="date"
+                              aria-label="End date"
+                              min={start}
+                              max={options?.today}
+                              value={end}
+                              onChange={(e) => setEnd(e.target.value)}
+                            />
+                          </label>
+                          <label>
+                            Granularity
+                            <select
+                              value={granularity}
+                              onChange={(e) => setGranularity(e.target.value)}
+                            >
+                              <option value="MONTHLY">Monthly</option>
+                              <option value="DAILY">Daily</option>
+                            </select>
+                          </label>
+                        </div>
+                      </>
+                    ) : spendingPeriod === "month" || spendingPeriod === "week" ? (
+                      <div className="filter-grid">
+                        <label>
+                          Month
+                          <select
+                            aria-label="Spending month"
+                            value={selectedMonth}
+                            onChange={(e) => { setSelectedMonth(e.target.value); setFromDay(1); setToDay(0); }}
+                          >
+                            {months.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                          </select>
+                        </label>
+                        {spendingPeriod === "month" && <label className="checkbox">
+                          <input type="checkbox" checked={limitMonthDays} onChange={(e) => setLimitMonthDays(e.target.checked)} />
+                          Custom day range
+                        </label>}
+                        {spendingPeriod === "month" && limitMonthDays && <>
+                          <label>From day
+                            <select aria-label="From day" value={fromDay} onChange={(e) => { const day = Number(e.target.value); setFromDay(day); setToDay((current) => current && current < day ? day : current); }}>
+                              {Array.from({ length: monthDayCount }, (_, index) => index + 1).map((day) => <option key={day} value={day}>{day}</option>)}
+                            </select>
+                          </label>
+                          <label>Through day
+                            <select aria-label="Through day" value={toDay || monthDayCount} onChange={(e) => setToDay(Number(e.target.value))}>
+                              {Array.from({ length: Math.max(0, monthDayCount - fromDay + 1) }, (_, index) => fromDay + index).map((day) => <option key={day} value={day}>{day}</option>)}
+                            </select>
+                          </label>
+                        </>}
+                      </div>
+                    ) : null}
+                    <div className="filter-grid">
+                      <label>Group by
+                        <select value={group} onChange={(e) => setGroup(e.target.value)}>
+                          <option value="LINKED_ACCOUNT">Account</option>
+                          <option value="SERVICE">Service</option>
+                          <option value="REGION">Region</option>
+                        </select>
                       </label>
-                    </>
-                  )}
-                </div>
-                {values.error && <ErrorBox message={values.error} />}
-                {tagKey && !absent && tagValues.length === 0 && (
-                  <p className="filter-note">
-                    Select tag values or “Missing tag” to apply the tag filter.
-                  </p>
+                      {spendingPeriod === "week" && <p className="filter-note">Compare days 1–7, 8–14, 15–21, 22–28, and 29–month end. The current month stops at the latest completed day.</p>}
+                      {spendingPeriod === "month" && <p className="filter-note">Daily spend in the selected month. Optionally choose a shorter inclusive day range.</p>}
+                    </div>
+                    <div className="filter-row">
+                      <MultiSelect
+                        label="Accounts"
+                        options={
+                          options?.accounts.map((a) => ({
+                            value: a.Id,
+                            label: a.Name,
+                          })) || []
+                        }
+                        selected={accounts}
+                        onChange={setAccounts}
+                      />
+                      <MultiSelect
+                        label="Services"
+                        options={
+                          options?.services.map((v) => ({
+                            value: v,
+                            label: v,
+                          })) || []
+                        }
+                        selected={services}
+                        onChange={setServices}
+                      />
+                      <MultiSelect
+                        label="Regions"
+                        options={
+                          options?.regions.map((v) => ({
+                            value: v,
+                            label: v || "No region",
+                          })) || []
+                        }
+                        selected={regions}
+                        onChange={setRegions}
+                      />
+                      <label className="tag-select">
+                        <Tag size={14} />
+                        <select
+                          aria-label="Tag key"
+                          value={tagKey}
+                          onChange={(e) => {
+                            setTagKey(e.target.value);
+                            setTagValues([]);
+                            setAbsent(false);
+                          }}
+                        >
+                          <option value="">Cost allocation tag</option>
+                          {active.map((t) => (
+                            <option key={t.TagKey}>{t.TagKey}</option>
+                          ))}
+                        </select>
+                      </label>
+                      {tagKey && (
+                        <>
+                          <MultiSelect
+                            label="Tag values"
+                            options={(values.result?.data || []).map((v) => ({
+                              value: v,
+                              label: v || "(empty value)",
+                            }))}
+                            selected={tagValues}
+                            onChange={(v) => {
+                              setTagValues(v);
+                              setAbsent(false);
+                            }}
+                          />
+                          <label className="checkbox">
+                            <input
+                              type="checkbox"
+                              checked={absent}
+                              onChange={(e) => {
+                                setAbsent(e.target.checked);
+                                setTagValues([]);
+                              }}
+                            />
+                            Missing tag
+                          </label>
+                        </>
+                      )}
+                    </div>
+                    {values.error && <ErrorBox message={values.error} />}
+                    {tagKey && !absent && tagValues.length === 0 && (
+                      <p className="filter-note">
+                        Select tag values or “Missing tag” to apply the tag
+                        filter.
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <div
+                      className="view-switch compact"
+                      aria-label="Resource arrival period"
+                    >
+                      <button
+                        type="button"
+                        className={
+                          resourcePeriod === "WEEKLY" ? "selected" : ""
+                        }
+                        aria-pressed={resourcePeriod === "WEEKLY"}
+                        onClick={() => setResourcePeriod("WEEKLY")}
+                      >
+                        Weekly arrivals
+                      </button>
+                      <button
+                        type="button"
+                        className={
+                          resourcePeriod === "MONTHLY" ? "selected" : ""
+                        }
+                        aria-pressed={resourcePeriod === "MONTHLY"}
+                        onClick={() => setResourcePeriod("MONTHLY")}
+                      >
+                        Monthly arrivals
+                      </button>
+                    </div>
+                    <div className="filter-row">
+                      <MultiSelect
+                        label="Accounts"
+                        options={
+                          options?.accounts.map((a) => ({
+                            value: a.Id,
+                            label: a.Name,
+                          })) || []
+                        }
+                        selected={accounts}
+                        onChange={setAccounts}
+                      />
+                      <p className="filter-note">
+                        EC2 Compute only · latest 14 completed days ·
+                        resource-level Cost Explorer opt-in required.
+                      </p>
+                    </div>
+                  </>
                 )}
               </section>
-              {explorer.loading ? (
+              {spendingView === "new" ? (
+                newResources.loading ? (
+                  <Loading />
+                ) : newResources.error ? (
+                  <ErrorBox message={newResources.error} />
+                ) : (
+                  newResources.result && (
+                    <>
+                      <section className="card trend-card">
+                        <CardHead
+                          title="First seen resources and spend"
+                          note={`${newResources.result.data.start} → ${newResources.result.data.end} (exclusive)`}
+                        />
+                        <p className="filter-note">
+                          First positive spend in this window; resources seen on
+                          day one are excluded. This is not a creation date.
+                          Spend is summed from first appearance to the end of
+                          the window.
+                        </p>
+                        <div className="chart">
+                          <ResponsiveContainer width="100%" height={270}>
+                            <ComposedChart
+                              data={newResources.result.data.periods}
+                              margin={{
+                                top: 15,
+                                right: 18,
+                                left: 4,
+                                bottom: 0,
+                              }}
+                            >
+                              <CartesianGrid
+                                strokeDasharray="3 5"
+                                vertical={false}
+                                stroke="#e9e7f1"
+                              />
+                              <XAxis
+                                dataKey="period"
+                                tick={{ fill: "#8f8ca1", fontSize: 11 }}
+                              />
+                              <YAxis
+                                yAxisId="count"
+                                allowDecimals={false}
+                                tick={{ fill: "#8f8ca1", fontSize: 11 }}
+                              />
+                              <YAxis
+                                yAxisId="spend"
+                                orientation="right"
+                                tickFormatter={(v) => money(v, true)}
+                                tick={{ fill: "#8f8ca1", fontSize: 11 }}
+                              />
+                              <Tooltip
+                                formatter={(v, name) =>
+                                  name === "Spend (USD)" || name === "Spend trend"
+                                    ? money(Number(v))
+                                    : String(v)
+                                }
+                              />
+                              <Bar
+                                yAxisId="count"
+                                dataKey="count"
+                                name="Resources"
+                                fill="#8370d8"
+                                isAnimationActive={false}
+                              />
+                              <Bar
+                                yAxisId="spend"
+                                dataKey="spend"
+                                name="Spend (USD)"
+                                fill="#36a69a"
+                                isAnimationActive={false}
+                              />
+                              <Line yAxisId="spend" dataKey="spend" name="Spend trend" type="linear" stroke="#c65f4a" strokeWidth={2.5} dot={{ r: 3 }} isAnimationActive={false} />
+                            </ComposedChart>
+                          </ResponsiveContainer>
+                        </div>
+                        <div className="chart-foot">
+                          Purple: resource count · teal: USD spend · orange: spend trend{" "}
+                          {newResources.result.data.estimated && (
+                            <b className="estimated">EST.</b>
+                          )}
+                        </div>
+                      </section>
+                      <section className="card">
+                        <CardHead
+                          title="Resource mapping"
+                          note={`${newResources.result.data.resources.length} first seen · ${newResources.result.data.observed_count} observed IDs`}
+                        />
+                        <div className="table-scroll">
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>RESOURCE ID</th>
+                                <th>ACCOUNT</th>
+                                <th>FIRST SEEN</th>
+                                <th className="num">SPEND (USD)</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {newResources.result.data.resources.map((r) => (
+                                <tr key={`${r.account}:${r.id}`}>
+                                  <td>
+                                    <strong>{r.id}</strong>
+                                  </td>
+                                  <td>
+                                    {names[r.account] || r.account}
+                                    <small className="block muted">
+                                      {r.account}
+                                    </small>
+                                  </td>
+                                  <td>{r.first_seen}</td>
+                                  <td className="num amount">
+                                    {money(r.spend)}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        {newResources.result.data.resources.length === 0 && (
+                          <div className="empty">
+                            No first seen resources in this window.
+                          </div>
+                        )}
+                      </section>
+                    </>
+                  )
+                )
+              ) : explorer.loading ? (
                 <Loading />
               ) : explorer.error ? (
                 <ErrorBox message={explorer.error} />
@@ -1096,8 +1415,13 @@ export function CostellationPage() {
                   <>
                     <section className="card trend-card">
                       <CardHead
-                        title="Filtered spending"
-                        note={`${start} → ${end} (exclusive)`}
+                        title={
+                          spendingPeriod === "six-months" ? "Spending · last 6 months" :
+                          spendingPeriod === "month" ? `Daily spending · ${selectedMonth}` :
+                          spendingPeriod === "week" ? `Weekly spending · ${selectedMonth}` :
+                          "Filtered spending"
+                        }
+                        note={`${explorer.result.data.start} → ${explorer.result.data.end} (exclusive)`}
                       >
                         <div className="explorer-total">
                           {money(explorer.result.data.total)}
@@ -1106,13 +1430,10 @@ export function CostellationPage() {
                           )}
                         </div>
                       </CardHead>
-                      <Trend
-                        data={explorer.result.data}
-                        daily={granularity === "DAILY"}
-                      />
+                      <SpendingBars data={explorer.result.data} mode={spendingPeriod} month={selectedMonth} />
                       <div className="chart-foot">
                         <Check size={13} />
-                        Grouped costs reconcile with the independent total
+                        Bars show spend · line shows change · grouped costs reconcile
                         <span>
                           USD ·{" "}
                           {metric === "UnblendedCost"

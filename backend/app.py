@@ -1,7 +1,7 @@
 import csv
 import io
 import os
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -117,6 +117,57 @@ def query_data(start, end, metric, granularity, group, accounts, services, regio
 @app.get("/api/costs")
 def costs(start: date, end: date, metric: str = "UnblendedCost", granularity: str = "MONTHLY", group: str = "LINKED_ACCOUNT", accounts: list[str] = Query(default=[]), services: list[str] = Query(default=[]), regions: list[str] = Query(default=[]), tag_key: str = "", tag_values: list[str] = Query(default=[]), absent: bool = False, refresh: bool = False):
     return query_data(start, end, metric, granularity, group, accounts, services, regions, tag_key, tag_values, absent, refresh)
+
+
+def resource_period(day: date, period: str) -> date:
+    return day.replace(day=1) if period == "MONTHLY" else day - timedelta(days=day.weekday())
+
+
+def summarize_new_resources(daily, start, end, period):
+    observed = {}
+    for row in daily:
+        day = date.fromisoformat(row["start"])
+        for group in row["groups"]:
+            resource_id, account = group["keys"]
+            amount = Decimal(group["amount"])
+            if not resource_id or resource_id.lower() in {"no resource id", "no resource id found"}:
+                continue
+            key = (account, resource_id)
+            item = observed.setdefault(key, {"first_seen": None, "daily": {}})
+            if amount > 0:
+                item["first_seen"] = min(item["first_seen"], day) if item["first_seen"] else day
+            item["daily"][day] = item["daily"].get(day, Decimal(0)) + amount
+    buckets = {}
+    resources = []
+    for (account, resource_id), item in observed.items():
+        first = item["first_seen"]
+        if first is None or first == start:
+            continue
+        bucket = resource_period(first, period)
+        spend = sum((value for day, value in item["daily"].items() if day >= first), Decimal(0))
+        resources.append({"id": resource_id, "account": account, "first_seen": str(first), "period": str(bucket), "spend": str(spend)})
+        summary = buckets.setdefault(bucket, {"period": str(bucket), "count": 0, "spend": Decimal(0)})
+        summary["count"] += 1
+        summary["spend"] += spend
+    day = start + timedelta(days=1)
+    while day < end:
+        bucket = resource_period(day, period)
+        buckets.setdefault(bucket, {"period": str(bucket), "count": 0, "spend": Decimal(0)})
+        day += timedelta(days=1)
+    resources.sort(key=lambda item: (item["first_seen"], Decimal(item["spend"])), reverse=True)
+    return {"start": str(start), "end": str(end), "period": period, "service": "Amazon Elastic Compute Cloud - Compute", "periods": [{**item, "spend": str(item["spend"])} for _, item in sorted(buckets.items())], "resources": resources, "observed_count": len(observed), "estimated": any(row["estimated"] for row in daily)}
+
+
+@app.get("/api/new-resources")
+def new_resources(period: str = "WEEKLY", metric: str = "UnblendedCost", accounts: list[str] = Query(default=[]), refresh: bool = False):
+    if period not in {"WEEKLY", "MONTHLY"} or metric not in METRICS:
+        raise ValueError("Unsupported period or metric.")
+    end = today()
+    start = end - timedelta(days=14)
+    def load():
+        daily = aws.resource_costs(start, end, metric, accounts)
+        return summarize_new_resources(daily, start, end, period)
+    return cached("new-resources", [str(start), str(end), period, metric, accounts], load, refresh)
 
 
 @app.get("/api/accounts")
