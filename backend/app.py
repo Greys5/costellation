@@ -1,7 +1,7 @@
 import csv
 import io
 import os
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -119,55 +119,74 @@ def costs(start: date, end: date, metric: str = "UnblendedCost", granularity: st
     return query_data(start, end, metric, granularity, group, accounts, services, regions, tag_key, tag_values, absent, refresh)
 
 
-def resource_period(day: date, period: str) -> date:
-    return day.replace(day=1) if period == "MONTHLY" else day - timedelta(days=day.weekday())
+@app.get("/api/cost-changes")
+def cost_changes(base_month: date, compare_month: date, metric: str = "UnblendedCost", group: str = "SERVICE", accounts: list[str] = Query(default=[]), services: list[str] = Query(default=[]), regions: list[str] = Query(default=[]), tag_key: str = "", refresh: bool = False):
+    if metric not in METRICS or group not in {"SERVICE", "LINKED_ACCOUNT"}:
+        raise ValueError("Unsupported metric or grouping.")
+    if base_month.day != 1 or compare_month.day != 1 or base_month >= compare_month:
+        raise ValueError("Choose two completed months in chronological order.")
+    base_end, compare_end = month_shift(base_month, 1), month_shift(compare_month, 1)
+    validate_window(base_month, base_end, today())
+    validate_window(compare_month, compare_end, today())
+    filters = build_filter(accounts, services, regions, "", [], False)
+    args = [str(base_month), str(compare_month), metric, group, filters, tag_key]
 
-
-def summarize_new_resources(daily, start, end, period):
-    observed = {}
-    for row in daily:
-        day = date.fromisoformat(row["start"])
-        for group in row["groups"]:
-            resource_id, account = group["keys"]
-            amount = Decimal(group["amount"])
-            if not resource_id or resource_id.lower() in {"no resource id", "no resource id found"}:
-                continue
-            key = (account, resource_id)
-            item = observed.setdefault(key, {"first_seen": None, "daily": {}})
-            if amount > 0:
-                item["first_seen"] = min(item["first_seen"], day) if item["first_seen"] else day
-            item["daily"][day] = item["daily"].get(day, Decimal(0)) + amount
-    buckets = {}
-    resources = []
-    for (account, resource_id), item in observed.items():
-        first = item["first_seen"]
-        if first is None or first == start:
-            continue
-        bucket = resource_period(first, period)
-        spend = sum((value for day, value in item["daily"].items() if day >= first), Decimal(0))
-        resources.append({"id": resource_id, "account": account, "first_seen": str(first), "period": str(bucket), "spend": str(spend)})
-        summary = buckets.setdefault(bucket, {"period": str(bucket), "count": 0, "spend": Decimal(0)})
-        summary["count"] += 1
-        summary["spend"] += spend
-    day = start + timedelta(days=1)
-    while day < end:
-        bucket = resource_period(day, period)
-        buckets.setdefault(bucket, {"period": str(bucket), "count": 0, "spend": Decimal(0)})
-        day += timedelta(days=1)
-    resources.sort(key=lambda item: (item["first_seen"], Decimal(item["spend"])), reverse=True)
-    return {"start": str(start), "end": str(end), "period": period, "service": "Amazon Elastic Compute Cloud - Compute", "periods": [{**item, "spend": str(item["spend"])} for _, item in sorted(buckets.items())], "resources": resources, "observed_count": len(observed), "estimated": any(row["estimated"] for row in daily)}
-
-
-@app.get("/api/new-resources")
-def new_resources(period: str = "WEEKLY", metric: str = "UnblendedCost", accounts: list[str] = Query(default=[]), refresh: bool = False):
-    if period not in {"WEEKLY", "MONTHLY"} or metric not in METRICS:
-        raise ValueError("Unsupported period or metric.")
-    end = today()
-    start = end - timedelta(days=14)
     def load():
-        daily = aws.resource_costs(start, end, metric, accounts)
-        return summarize_new_resources(daily, start, end, period)
-    return cached("new-resources", [str(start), str(end), period, metric, accounts], load, refresh)
+        if tag_key and tag_key not in {tag["TagKey"] for tag in aws.tags() if tag["Status"] == "Active"}:
+            raise ValueError("Choose an active cost allocation tag for change attribution.")
+
+        def month_data(start, end):
+            grouped = aws.costs(start, end, metric, "MONTHLY", group, filters)
+            plain = aws.costs(start, end, metric, "MONTHLY", None, filters)
+            amount = Decimal(total(plain))
+            if abs(Decimal(total(grouped)) - amount) > Decimal("0.01"):
+                raise ValueError("Grouped costs do not reconcile with totals. Refresh before using this comparison.")
+            by_key = {}
+            for period in grouped:
+                for row in period["groups"]:
+                    key = row["keys"][0]
+                    by_key[key] = by_key.get(key, Decimal(0)) + Decimal(row["amount"])
+            by_tag = {}
+            if tag_key:
+                tagged = aws.costs_by_tag(start, end, metric, group, tag_key, filters)
+                for period in tagged:
+                    for row in period["groups"]:
+                        key, raw_value = row["keys"]
+                        prefix = tag_key + "$"
+                        if not raw_value.startswith(prefix):
+                            raise ValueError("Unexpected tag group returned by Cost Explorer.")
+                        value = raw_value[len(prefix):]
+                        values = by_tag.setdefault(key, {})
+                        values[value] = values.get(value, Decimal(0)) + Decimal(row["amount"])
+                for key in by_key.keys() | by_tag.keys():
+                    if abs(sum(by_tag.get(key, {}).values(), Decimal(0)) - by_key.get(key, Decimal(0))) > Decimal("0.01"):
+                        raise ValueError("Tag values do not reconcile with grouped costs. Refresh before using this comparison.")
+            return amount, by_key, by_tag, any(period["estimated"] for period in plain)
+
+        base_total, base_groups, base_tags, base_estimated = month_data(base_month, base_end)
+        compare_total, compare_groups, compare_tags, compare_estimated = month_data(compare_month, compare_end)
+        rows = []
+        for key in base_groups.keys() | compare_groups.keys():
+            previous = base_groups.get(key, Decimal(0))
+            current = compare_groups.get(key, Decimal(0))
+            tag_deltas = {}
+            if tag_key:
+                old_values, new_values = base_tags.get(key, {}), compare_tags.get(key, {})
+                tag_deltas = {value: str(new_values.get(value, Decimal(0)) - old_values.get(value, Decimal(0))) for value in old_values.keys() | new_values.keys()}
+            rows.append({"key": key, "previous": str(previous), "current": str(current), "delta": str(current - previous), "tag_deltas": tag_deltas})
+        rows.sort(key=lambda row: Decimal(row["delta"]), reverse=True)
+        delta = compare_total - base_total
+        tag = None
+        if tag_key:
+            base_missing = sum((values.get("", Decimal(0)) for values in base_tags.values()), Decimal(0))
+            compare_missing = sum((values.get("", Decimal(0)) for values in compare_tags.values()), Decimal(0))
+            tagged_delta = (compare_total - compare_missing) - (base_total - base_missing)
+            missing_delta = compare_missing - base_missing
+            share = tagged_delta / delta * 100 if delta > 0 and tagged_delta >= 0 and missing_delta >= 0 else None
+            tag = {"key": tag_key, "tagged_delta": str(tagged_delta), "untagged_delta": str(missing_delta), "tagged_share_of_increase": str(share) if share is not None else None}
+        return {"base_month": str(base_month), "compare_month": str(compare_month), "base_total": str(base_total), "compare_total": str(compare_total), "delta": str(delta), "group": group, "rows": rows, "tag": tag, "estimated": base_estimated or compare_estimated, "currency": "USD"}
+
+    return cached("cost-changes-v2", args, load, refresh)
 
 
 @app.get("/api/accounts")

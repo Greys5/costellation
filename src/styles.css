@@ -870,6 +870,40 @@ tbody tr:hover {
 .view-switch.compact {
   margin-top: 0;
 }
+.change-totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 28px;
+  padding: 4px 0 18px;
+  color: #77738b;
+}
+.change-totals span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.change-totals strong {
+  color: #29263a;
+  font-size: 15px;
+}
+.change-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  padding: 4px 0 14px;
+  color: #625d78;
+  font-size: 11px;
+}
+.change-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.change-legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
 .filter-title {
   display: flex;
   align-items: center;

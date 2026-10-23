@@ -18,9 +18,6 @@ module = importlib.import_module("backend.app")
 class FakeAWS:
     profile = "test"
 
-    def resource_costs(self, start, end, metric="UnblendedCost", accounts=None):
-        return []
-
     def accounts(self):
         return [{"Id": "000000000001", "Name": "Alpha", "State": "ACTIVE"}, {"Id": "000000000002", "Name": "Zero", "State": "ACTIVE"}]
 
@@ -47,28 +44,49 @@ def test_api_reconciles_and_caches_costs(client):
     assert client.get("/api/costs?start=2026-09-01&end=2026-10-01").json()["meta"]["cached"] is True
 
 
-def test_new_resources_excludes_baseline_and_maps_accounts(client, monkeypatch):
-    calls = []
-    def resource_costs(start, end, metric, accounts):
-        calls.append((start, end, metric, accounts))
-        def day(value, groups):
-            return {"start": value, "end": value, "estimated": False, "groups": [
-                {"keys": [resource, account], "amount": amount} for resource, account, amount in groups
-            ]}
-        return [
-            day("2026-10-02", [("i-old", "000000000001", "2")]),
-            day("2026-10-08", [("i-new", "000000000001", "5"), ("No resource ID", "000000000001", "9")]),
-            day("2026-10-09", [("i-new", "000000000001", "-1")]),
-        ]
-    monkeypatch.setattr(module.aws, "resource_costs", resource_costs)
-    response = client.get("/api/new-resources?period=WEEKLY&accounts=000000000001")
-    assert response.status_code == 200
-    data = response.json()["data"]
-    assert calls == [(date(2026, 10, 2), date(2026, 10, 16), "UnblendedCost", ["000000000001"])]
-    assert data["resources"] == [{"id": "i-new", "account": "000000000001", "first_seen": "2026-10-08", "period": "2026-10-05", "spend": "4"}]
-    assert data["observed_count"] == 2
-    assert sum(row["count"] for row in data["periods"]) == 1
-    assert client.get("/api/new-resources?period=YEARLY").status_code == 422
+def test_monthly_cost_increase_drills_into_service_and_tag_attribution(client, monkeypatch):
+    def fake_costs(start, end, metric, granularity, group, filters):
+        amounts = {1: {"Database": "100", "Compute": "50"}, 2: {"Database": "200", "Compute": "40"}}[start.month]
+        clauses = filters.get("And", [filters]) if filters else []
+        selected = next((c["Dimensions"]["Values"] for c in clauses if "Dimensions" in c and c["Dimensions"]["Key"] == "SERVICE"), None)
+        missing = any("Tags" in c and c["Tags"].get("MatchOptions") == ["ABSENT"] for c in clauses)
+        if missing:
+            amounts = {1: {"Database": "20", "Compute": "10"}, 2: {"Database": "50", "Compute": "10"}}[start.month]
+        values = {key: amount for key, amount in amounts.items() if not selected or key in selected}
+        return [{"start": str(start), "end": str(end), "estimated": False,
+                 "groups": [{"keys": [key], "amount": amount} for key, amount in values.items()] if group else [],
+                 "total": str(sum(Decimal(value) for value in values.values()))}]
+    monkeypatch.setattr(module.aws, "costs", fake_costs)
+    def fake_tagged(start, end, metric, group, tag_key, filters):
+        values = {1: {"Database": {"": "20", "prod": "80"}, "Compute": {"": "10", "prod": "40"}},
+                  2: {"Database": {"": "50", "prod": "150"}, "Compute": {"": "10", "prod": "30"}}}[start.month]
+        clauses = filters.get("And", [filters]) if filters else []
+        selected = next((c["Dimensions"]["Values"] for c in clauses if "Dimensions" in c and c["Dimensions"]["Key"] == "SERVICE"), None)
+        groups = [{"keys": [service, f"{tag_key}${value}"], "amount": amount} for service, tags in values.items() if not selected or service in selected for value, amount in tags.items()]
+        return [{"start": str(start), "end": str(end), "estimated": False, "groups": groups, "total": str(sum(Decimal(row["amount"]) for row in groups))}]
+    monkeypatch.setattr(module.aws, "costs_by_tag", fake_tagged, raising=False)
+    result = client.get("/api/cost-changes?base_month=2026-01-01&compare_month=2026-02-01&group=SERVICE&tag_key=environment&services=Database")
+    assert result.status_code == 200
+    data = result.json()["data"]
+    assert data["delta"] == "100"
+    assert data["rows"] == [{"key": "Database", "previous": "100", "current": "200", "delta": "100", "tag_deltas": {"": "30", "prod": "70"}}]
+    assert data["tag"] == {"key": "environment", "tagged_delta": "70", "untagged_delta": "30", "tagged_share_of_increase": "70.0"}
+    overall = client.get("/api/cost-changes?base_month=2026-01-01&compare_month=2026-02-01&group=SERVICE").json()["data"]
+    assert overall["delta"] == "90"
+    assert {row["key"]: row["delta"] for row in overall["rows"]} == {"Database": "100", "Compute": "-10"}
+    assert all(not row["tag_deltas"] for row in overall["rows"])
+    def offset_tagged(start, end, metric, group, tag_key, filters):
+        result = fake_tagged(start, end, metric, group, tag_key, filters)
+        if start.month == 2:
+            for row in result[0]["groups"]:
+                if row["keys"][0] == "Database":
+                    row["amount"] = "10" if row["keys"][1].endswith("$") else "190"
+        return result
+    monkeypatch.setattr(module.aws, "costs_by_tag", offset_tagged)
+    offset = client.get("/api/cost-changes?base_month=2026-01-01&compare_month=2026-02-01&group=SERVICE&tag_key=environment&services=Database&refresh=true").json()["data"]
+    assert offset["tag"] == {"key": "environment", "tagged_delta": "110", "untagged_delta": "-10", "tagged_share_of_increase": None}
+    assert sum(Decimal(value) for value in offset["rows"][0]["tag_deltas"].values()) == Decimal(offset["delta"])
+    assert client.get("/api/cost-changes?base_month=2026-09-01&compare_month=2026-10-01").status_code == 422
 
 
 def test_api_rejects_nonreconciling_groups(client, monkeypatch):

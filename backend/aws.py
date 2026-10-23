@@ -121,18 +121,12 @@ class AWS:
             args["Filter"] = filters
         return merge_pages(self.pages("ce", "get_cost_and_usage", **args), metric)
 
-    def resource_costs(self, start, end, metric="UnblendedCost", accounts=None):
-        clauses = [{"Dimensions": {"Key": "SERVICE", "Values": ["Amazon Elastic Compute Cloud - Compute"]}}]
-        if accounts:
-            clauses.append({"Dimensions": {"Key": "LINKED_ACCOUNT", "Values": accounts}})
-        args = {
-            "TimePeriod": {"Start": str(start), "End": str(end)},
-            "Granularity": "DAILY",
-            "Metrics": [metric],
-            "Filter": {"And": clauses} if len(clauses) > 1 else clauses[0],
-            "GroupBy": [{"Type": "DIMENSION", "Key": "RESOURCE_ID"}, {"Type": "DIMENSION", "Key": "LINKED_ACCOUNT"}],
-        }
-        return merge_pages(self.pages("ce", "get_cost_and_usage_with_resources", **args), metric)
+    def costs_by_tag(self, start, end, metric, group, tag_key, filters=None):
+        args = {"TimePeriod": {"Start": str(start), "End": str(end)}, "Granularity": "MONTHLY", "Metrics": [metric],
+                "GroupBy": [{"Type": "DIMENSION", "Key": group}, {"Type": "TAG", "Key": tag_key}]}
+        if filters:
+            args["Filter"] = filters
+        return merge_pages(self.pages("ce", "get_cost_and_usage", **args), metric)
 
     def dimensions(self, start, end, dimension):
         return sorted({v["Value"] for p in self.pages("ce", "get_dimension_values", TimePeriod={"Start": str(start), "End": str(end)}, Dimension=dimension, Context="COST_AND_USAGE") for v in p.get("DimensionValues", [])})
