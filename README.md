@@ -45,7 +45,8 @@ Framework references: [Backstage app instances](https://backstage.io/docs/fronte
 
 - **Overview:** organization totals, month-to-date comparison, monthly history, and top accounts/services. Export the account report.
 - **Accounts:** all current organization accounts, including zero-cost accounts; preserve historical billed accounts. Search by account name or ID. Select an account to explore its services. CSV follows the account search.
-- **Cost Explorer:** select dates, cost basis, grouping, granularity, and multiple account/service/region filters. Values within a dimension use OR; different dimensions use AND. Select an active tag and its values, or “Missing tag.” Export the same filtered results.
+- **Cost Explorer:** visible tabs separate all spending from cost changes. All spending opens with a six-calendar-month overview (current month included). Choose **Custom range** for explicit dates and monthly/daily granularity, **Month** for daily bars across a month selected from a dropdown (optionally limit to an inclusive range of days), or **Week** to compare all weeks of a dropdown-selected month. Weeks are days 1–7, 8–14, 15–21, 22–28, and 29–month end; current periods stop at the latest completed day. Charts combine spending bars with a line joining their values to show changes between periods. Account, service, region, and active cost-allocation-tag filters apply in every period. Values within a dimension use OR; different dimensions use AND. Export follows the selected query window.
+- **Cost changes:** compare two completed months across all billed AWS services. The difference is later minus earlier cost, with separate positive drivers and offsetting decreases. Break down by service or account; filter accounts, services, and regions, or select a driver to isolate it. Bars show the overall change by default. Choose one active cost-allocation tag key to color each driver by tag value; select up to six specific values, while other values and costs without a value remain visible. Segments and the tag-value/no-value totals reconcile to the net change; a percentage appears only when both contributions are nonnegative and the net change is positive. Tag keys are compared one at a time because the same cost can carry several keys and stacking them would double-count it. This is a spend comparison, not an inventory or creation-date report.
 - **Tags:** active/inactive billing tag inventory, per-tag net-cost allocation coverage, existing naming variants, and proposed business dimensions. Assessment only; no tag changes or activation.
 
 ## Cost definitions
@@ -73,6 +74,7 @@ ce:ListCostAllocationTags
 ```
 
 Organization-wide billing access must be available through the management account. Renew expired access with `aws sso login --profile "$AWS_PROFILE"`, then retry. Cost Explorer API calls can incur AWS charges.
+
 
 Responses are stored in `.cache/billing.sqlite3` for 24 hours, keyed by profile and query. Refresh fetches current data for the visible page; normal navigation uses the cache. Retrieval timestamps show when data was fetched, not when AWS last updated billing. Cache misses are serialized to avoid duplicate paid calls. Failed refreshes return an error, never zero costs; previous successful cache entries are preserved until expiry or successful refresh. To remove local billing data, stop the app and delete `.cache/` and `exports/`.
 
